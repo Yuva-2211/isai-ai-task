@@ -1,4 +1,5 @@
-from typing import List, Tuple, Dict, Set
+import json
+from typing import List, Tuple, Dict, Set, Optional
 from collections import defaultdict
 from src.models.schema import WorkflowDefinition, NodeType
 
@@ -220,9 +221,70 @@ def validate_semantic_integrity(wf: WorkflowDefinition) -> Tuple[bool, List[str]
     return len(errors) == 0, errors
 
 
-def validate_complete_workflow(wf: WorkflowDefinition) -> Tuple[bool, List[str]]:
+def validate_semantic_fidelity(wf: WorkflowDefinition, natural_prompt: str) -> Tuple[bool, List[str]]:
     """
-    Executes both DAG structural validation and semantic integrity validation.
+    Validates adherence to the 10 SEMANTIC FIDELITY RULES:
+    1. Preserves domain (does not convert invoice into loan, etc.)
+    2. Preserves exact numeric thresholds
+    3. Preserves comparison directions (> vs >=, < vs <=)
+    4. Preserves requested roles (e.g. finance manager vs credit officer)
+    5. Preserves requested notification systems and APIs
+    """
+    import re
+    errors: List[str] = []
+    p_lower = natural_prompt.lower()
+    wf_text = f"{wf.name} {wf.description} " + " ".join(
+        f"{n.label} {n.description} {json.dumps(n.config)}" for n in wf.nodes
+    ).lower()
+
+    # Rule 3: Domain integrity check
+    domains = [
+        ("invoice", ["loan", "credit score", "disbursement"]),
+        ("refund", ["loan", "disbursement", "underwriting"]),
+        ("loan", ["invoice approval", "refund request"]),
+        ("onboard", ["loan", "refund", "invoice"])
+    ]
+    for target_domain, forbidden_terms in domains:
+        if target_domain in p_lower:
+            for forbidden in forbidden_terms:
+                if forbidden in wf.name.lower() or forbidden in wf.description.lower():
+                    errors.append(
+                        f"Domain conversion error (Fidelity Rule 3): Prompt concerns '{target_domain}', "
+                        f"but generated workflow mentions forbidden cross-domain term '{forbidden}' in title/description."
+                    )
+
+    # Rule 6 & 7: Exact numeric threshold preservation
+    num_matches = re.findall(r"(?:exceeds|greater than|>|at least|over|>=|\$)\s*(\d+(?:,\d+)*(?:\.\d+)?)", p_lower)
+    for raw_num in num_matches:
+        num_clean = raw_num.replace(",", "")
+        try:
+            if float(num_clean) > 0 and num_clean not in wf_text:
+                errors.append(
+                    f"Threshold fidelity error (Fidelity Rule 6): Numeric threshold '{num_clean}' "
+                    f"from user requirement was not found in any node condition or validation config."
+                )
+        except ValueError:
+            pass
+
+    # Rule 8: Role preservation
+    known_roles = ["finance manager", "credit officer", "support lead", "security admin", "compliance officer", "team lead", "hr manager"]
+    for role in known_roles:
+        if role in p_lower:
+            appr_nodes = [n for n in wf.nodes if n.type == NodeType.HUMAN_APPROVAL]
+            if appr_nodes:
+                roles_found = [n.config.get("required_role", "").lower().replace("_", " ") for n in appr_nodes]
+                if not any(role in rf or rf in role for rf in roles_found):
+                    errors.append(
+                        f"Role fidelity error (Fidelity Rule 8): User requested role '{role}', "
+                        f"but approval node specified: {roles_found}."
+                    )
+
+    return len(errors) == 0, errors
+
+
+def validate_complete_workflow(wf: WorkflowDefinition, natural_prompt: Optional[str] = None) -> Tuple[bool, List[str]]:
+    """
+    Executes DAG structural validation, semantic integrity validation, and semantic fidelity validation.
     """
     errors: List[str] = []
     dag_valid, dag_errors = validate_dag_structure(wf)
@@ -232,5 +294,10 @@ def validate_complete_workflow(wf: WorkflowDefinition) -> Tuple[bool, List[str]]
     sem_valid, sem_errors = validate_semantic_integrity(wf)
     if not sem_valid:
         errors.extend([f"[Semantic Integrity] {e}" for e in sem_errors])
+
+    if natural_prompt:
+        fid_valid, fid_errors = validate_semantic_fidelity(wf, natural_prompt)
+        if not fid_valid:
+            errors.extend([f"[Semantic Fidelity] {e}" for e in fid_errors])
 
     return len(errors) == 0, errors

@@ -92,6 +92,22 @@ STRICT ARCHITECTURAL & DAG INTEGRITY RULES:
 - All edges must reference valid existing node IDs in "from_node" and "to_node".
 - All "{{variable}}" interpolations in configs must reference keys declared in "sample_input" or upstream node outputs ("nodes.<node_id>.output.<field>").
 - Output ONLY pure JSON. No markdown backticks, no explanations.
+
+MANDATORY SEMANTIC FIDELITY RULES:
+1. The generated workflow MUST be derived from the user's current objective.
+2. Do not reuse business entities, field names, APIs, tools, roles, thresholds, or terminology from previous examples unless they are explicitly relevant to the current objective.
+3. Do not convert one business domain into another. For example, an invoice request must not become a loan workflow.
+4. Every major operation explicitly requested by the user must appear as a workflow node or be represented in an appropriate node configuration.
+5. Do not invent unnecessary operations.
+6. Preserve exact numeric thresholds from the user.
+7. Preserve the direction of comparisons:
+   - "exceeds $10,000" means > 10000,
+   - "at least $10,000" means >= 10000.
+8. Preserve requested roles:
+   - "finance manager" must not become "credit officer".
+9. Preserve requested systems:
+   - "payment API" must not become "banking disbursement API".
+10. Error handling requirements must be represented through on_error or explicit workflow nodes.
 """
 
 
@@ -162,8 +178,8 @@ def compile_workflow_with_groq(
             })
             continue
 
-        # --- Stage 3 & 4: Semantic Integrity & DAG Structural Validation ---
-        is_valid, validation_errors = validate_complete_workflow(workflow)
+        # --- Stage 3, 4 & 5: Semantic Integrity, Fidelity & DAG Structural Validation ---
+        is_valid, validation_errors = validate_complete_workflow(workflow, natural_prompt=natural_prompt)
         if not is_valid:
             error_summary = "\n- ".join(validation_errors)
             logger.warning(f"Attempt {attempt} failed validation:\n{error_summary}")

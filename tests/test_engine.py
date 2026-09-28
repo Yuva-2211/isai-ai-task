@@ -13,6 +13,7 @@ from src.engine.tool_registry import tool_fraud_detector, tool_tax_calculator
 from src.engine.validator import (
     validate_dag_structure,
     validate_semantic_integrity,
+    validate_semantic_fidelity,
     validate_complete_workflow
 )
 from src.generator.groq_client import generate_workflow_from_prompt
@@ -185,6 +186,60 @@ class TestSemanticValidation:
         with pytest.raises(ValueError) as excinfo:
             generate_workflow_from_prompt("Generate any workflow", api_key="")
         assert "groq api key required" in str(excinfo.value).lower()
+
+
+# ─── Semantic Fidelity Tests (10 Rules) ─────────────────
+
+class TestSemanticFidelity:
+    def test_fidelity_catches_domain_conversion(self):
+        # Prompt is about invoice, but workflow was named loan
+        wf = WorkflowDefinition(
+            id="wf_fake", name="Personal Loan Disbursal", description="Disbursement workflow",
+            entrypoint="s1",
+            nodes=[WorkflowNode(id="s1", type=NodeType.TOOL, label="Step 1", config={"tool_name": "tax"})],
+            edges=[]
+        )
+        is_valid, errors = validate_semantic_fidelity(wf, "Process incoming vendor invoice payment")
+        assert not is_valid
+        assert any("domain conversion error" in e.lower() for e in errors)
+
+    def test_fidelity_catches_role_mismatch(self):
+        # Prompt requests finance manager, but node gave credit officer
+        wf = WorkflowDefinition(
+            id="wf_role_test", name="Invoice Approval", description="Approve invoice",
+            entrypoint="appr",
+            nodes=[
+                WorkflowNode(
+                    id="appr",
+                    type=NodeType.HUMAN_APPROVAL,
+                    label="Credit Officer Approval",
+                    config={"prompt": "Approve this", "required_role": "Credit_Officer"}
+                )
+            ],
+            edges=[]
+        )
+        is_valid, errors = validate_semantic_fidelity(wf, "If amount > 500 require finance manager approval")
+        assert not is_valid
+        assert any("role fidelity error" in e.lower() for e in errors)
+
+    def test_fidelity_catches_missing_threshold(self):
+        # Prompt requests $25000 threshold, but not in workflow
+        wf = WorkflowDefinition(
+            id="wf_thresh_test", name="Purchase Order Workflow", description="PO workflow",
+            entrypoint="cond",
+            nodes=[
+                WorkflowNode(
+                    id="cond",
+                    type=NodeType.CONDITION,
+                    label="Check Amount",
+                    config={"expression": "amount > 500"}  # 25000 is missing
+                )
+            ],
+            edges=[]
+        )
+        is_valid, errors = validate_semantic_fidelity(wf, "When PO exceeds 25000, trigger approval")
+        assert not is_valid
+        assert any("threshold fidelity error" in e.lower() for e in errors)
 
 
 # ─── End-to-End Execution Tests ──────────────────────────
