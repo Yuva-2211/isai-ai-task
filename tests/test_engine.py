@@ -4,7 +4,7 @@ import sys
 # Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.models.schema import ExecutionStatus, NodeType
+from src.models.schema import ExecutionStatus, NodeType, WorkflowDefinition
 from src.generator.templates import get_template_as_workflow
 from src.engine.runner import WorkflowRunner
 from src.engine.evaluator import safe_eval_expression, interpolate_string
@@ -59,8 +59,63 @@ def test_end_to_end_dag_with_approval():
     assert len(resumed_exec.logs) > 0
     print(f"✓ Workflow completed after approval with {len(resumed_exec.logs)} logged steps!")
 
+from src.engine.validator import validate_dag_structure
+from src.models.schema import WorkflowNode, WorkflowEdge
+
+def test_dag_cycle_detection():
+    # Construct an invalid cyclic graph: step_1 -> step_2 -> step_1
+    wf = WorkflowDefinition(
+        id="wf_cyclic",
+        name="Cyclic Test",
+        description="Graph with cycle",
+        entrypoint="step_1",
+        nodes=[
+            WorkflowNode(id="step_1", type=NodeType.TOOL, label="Step 1"),
+            WorkflowNode(id="step_2", type=NodeType.TOOL, label="Step 2")
+        ],
+        edges=[
+            WorkflowEdge(from_node="step_1", to_node="step_2"),
+            WorkflowEdge(from_node="step_2", to_node="step_1")
+        ]
+    )
+    is_valid, errors = validate_dag_structure(wf)
+    assert not is_valid
+    assert any("cycle" in e.lower() for e in errors)
+    print("✓ test_dag_cycle_detection passed (cycle caught correctly)")
+
+def test_dag_condition_branch_validation():
+    # Construct a condition node with only 'true' branch
+    wf = WorkflowDefinition(
+        id="wf_incomplete_cond",
+        name="Incomplete Condition Test",
+        description="Missing false branch",
+        entrypoint="step_check",
+        nodes=[
+            WorkflowNode(id="step_check", type=NodeType.CONDITION, label="Check"),
+            WorkflowNode(id="step_target", type=NodeType.TOOL, label="Target")
+        ],
+        edges=[
+            WorkflowEdge(from_node="step_check", to_node="step_target", condition_branch="true")
+        ]
+    )
+    is_valid, errors = validate_dag_structure(wf)
+    assert not is_valid
+    assert any("false" in e for e in errors)
+    print("✓ test_dag_condition_branch_validation passed (missing branch caught)")
+
+def test_dag_predefined_templates_validity():
+    templates = ["wf_refund_guard", "wf_employee_onboarding"]
+    for t_id in templates:
+        wf = get_template_as_workflow(t_id)
+        is_valid, errors = validate_dag_structure(wf)
+        assert is_valid, f"Template {t_id} failed DAG validation: {errors}"
+    print("✓ test_dag_predefined_templates_validity passed (all baseline templates valid)")
+
 if __name__ == "__main__":
     print("Running Engine Test Suite...")
+    test_dag_cycle_detection()
+    test_dag_condition_branch_validation()
+    test_dag_predefined_templates_validity()
     test_tool_fraud_detector()
     test_tool_tax_calculator()
     test_evaluator_conditions()
