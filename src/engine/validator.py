@@ -282,9 +282,77 @@ def validate_semantic_fidelity(wf: WorkflowDefinition, natural_prompt: str) -> T
     return len(errors) == 0, errors
 
 
+def enrich_sample_input_for_validation(wf: WorkflowDefinition) -> None:
+    """
+    Ensures that wf.sample_input contains realistic, non-failing default values
+    for all fields checked in validation nodes.
+    For example:
+    - If a rule requires 'amount > 0', ensure sample_input['amount'] is a positive number (100.0), not 0.
+    - If a rule requires 'email contains @', ensure sample_input['email'] contains '@'.
+    - If a rule checks a date, ensure sample_input has a valid date string ('2026-09-28').
+    """
+    if wf.sample_input is None:
+        wf.sample_input = {}
+        
+    for node in wf.nodes:
+        if node.type == NodeType.VALIDATION:
+            rules = (node.config or {}).get("rules", [])
+            for rule in rules:
+                field = rule.get("field")
+                op = str(rule.get("operator", "")).lower().strip()
+                val = rule.get("value")
+                if not field:
+                    continue
+                
+                current = wf.sample_input.get(field)
+                
+                # Relational comparison rules (> 0, >= 100, etc.)
+                if op in [">", ">="]:
+                    try:
+                        threshold = float(val) if val is not None else 0.0
+                        if current is None or float(current) <= threshold:
+                            wf.sample_input[field] = threshold + 100.0 if threshold >= 0 else 100.0
+                    except (ValueError, TypeError):
+                        if current is None:
+                            wf.sample_input[field] = 100.0
+                            
+                elif op in ["<", "<="]:
+                    try:
+                        threshold = float(val) if val is not None else 1000.0
+                        if current is None or float(current) >= threshold:
+                            wf.sample_input[field] = max(threshold - 10.0, 1.0)
+                    except (ValueError, TypeError):
+                        pass
+                        
+                elif op == "contains" and val:
+                    if current is None or str(val).lower() not in str(current).lower():
+                        if str(val) == "@" or "email" in field.lower():
+                            wf.sample_input[field] = "customer@example.com"
+                        else:
+                            wf.sample_input[field] = f"sample_{val}_value"
+                            
+                elif op in ["exists", "required", "is_not_empty", "not_null"]:
+                    if current is None or str(current).strip() == "":
+                        if "email" in field.lower():
+                            wf.sample_input[field] = "customer@example.com"
+                        elif "date" in field.lower():
+                            wf.sample_input[field] = "2026-09-28"
+                        elif "amount" in field.lower() or "price" in field.lower() or "total" in field.lower():
+                            wf.sample_input[field] = 500.0
+                        elif "id" in field.lower():
+                            wf.sample_input[field] = "ORD-9901"
+                        else:
+                            wf.sample_input[field] = "sample_value"
+                            
+                elif op in ["is_date", "valid_date", "date_format", "date"]:
+                    if current is None or "20" not in str(current):
+                        wf.sample_input[field] = "2026-09-28"
+
+
 def validate_complete_workflow(wf: WorkflowDefinition, natural_prompt: Optional[str] = None) -> Tuple[bool, List[str]]:
     """
     Executes DAG structural validation, semantic integrity validation, and semantic fidelity validation.
+    Also enriches sample_input to guarantee immediate execution readiness.
     """
     errors: List[str] = []
     dag_valid, dag_errors = validate_dag_structure(wf)
@@ -299,5 +367,8 @@ def validate_complete_workflow(wf: WorkflowDefinition, natural_prompt: Optional[
         fid_valid, fid_errors = validate_semantic_fidelity(wf, natural_prompt)
         if not fid_valid:
             errors.extend([f"[Semantic Fidelity] {e}" for e in fid_errors])
+
+    if len(errors) == 0:
+        enrich_sample_input_for_validation(wf)
 
     return len(errors) == 0, errors
