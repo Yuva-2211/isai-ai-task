@@ -224,7 +224,7 @@ def generate_workflow_from_prompt(
     Invokes Groq LLM compiler with self-correction. If no API key is provided,
     raises a descriptive error or returns a clean baseline template for testing.
     """
-    effective_key = api_key or os.getenv("GROQ_API_KEY", "")
+    effective_key = api_key if api_key is not None else os.getenv("GROQ_API_KEY", "")
     model_name = model or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
     # Check if a real Groq key is configured
