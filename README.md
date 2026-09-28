@@ -11,13 +11,13 @@ An enterprise GenAI system that transforms high-level natural language operation
 
 ## 🎯 Problem Statement & Overview
 
-Business stakeholders frequently understand business intent (e.g. *"If a refund request exceeds $500, check the fraud score, request manager authorization, then trigger Stripe"*), but cannot manually wire together REST APIs, data transformations, conditional checks, error fallbacks, and human approval steps.
+Business stakeholders frequently understand business intent (e.g. *"If a refund request exceeds 500, check the fraud score, request manager authorization, then trigger Stripe"*), but cannot manually wire together REST APIs, data transformations, conditional checks, error fallbacks, and human approval steps.
 
 This platform bridges that gap by compiling unstructured text into a machine-executable DAG with real-time visualization and a pause/resume runtime engine.
 
 ---
 
-## 🏗 System Architecture
+##  System Architecture
 
 ```
                        ┌───────────────────────────────┐
@@ -50,7 +50,7 @@ This platform bridges that gap by compiling unstructured text into a machine-exe
 
 ---
 
-## 🧩 Supported Workflow Primitives (The 7 Node Types)
+##  Supported Workflow Primitives (The 7 Node Types)
 
 | Node Type | Functionality | Example |
 | :--- | :--- | :--- |
@@ -64,7 +64,7 @@ This platform bridges that gap by compiling unstructured text into a machine-exe
 
 ---
 
-## 🚀 Quickstart Guide
+##  Quickstart Guide
 
 ### 1. Prerequisites
 - Python 3.9+ installed
@@ -91,7 +91,7 @@ cp .env.example .env
 Add your Groq API Key:
 ```env
 GROQ_API_KEY=gsk_your_groq_api_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
 ```
 *(Note: If no API key is provided, the platform automatically switches to high-fidelity template synthesis, enabling full testing without an API key!)*
 
@@ -111,7 +111,7 @@ API Documentation (Swagger UI) is available at `http://localhost:8000/docs`.
 
 ---
 
-## 🧪 Demonstration & Test Scenarios
+## Demonstration & Test Scenarios
 
 ### Scenario 1: E-Commerce Refund & Fraud Guard
 - **Natural Language Prompt**:
@@ -127,7 +127,7 @@ API Documentation (Swagger UI) is available at `http://localhost:8000/docs`.
 
 ---
 
-## 📁 Repository Structure
+##  Repository Structure
 
 ```
 isai-ai-task/
@@ -157,7 +157,7 @@ isai-ai-task/
 
 ---
 
-## 🛡 Robustness & Error Handling
+##  Robustness & Error Handling
 - **AST Expression Sandbox**: Conditions are parsed through a syntax tree to prevent arbitrary code injection.
 - **Durable Persistence**: State is snapshotted into SQLite at every node transition, ensuring executions survive server restarts.
 - **Retry Policies**: Configurable retries with backoff and automatic fallback rerouting.
