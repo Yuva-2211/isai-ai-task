@@ -9,7 +9,7 @@ from src.models.schema import ExecutionStatus, NodeType, WorkflowDefinition, Wor
 from src.generator.templates import get_template_as_workflow
 from src.engine.runner import WorkflowRunner
 from src.engine.evaluator import safe_eval_expression, interpolate_string
-from src.engine.tool_registry import tool_fraud_detector, tool_tax_calculator
+from src.engine.tool_registry import tool_fraud_detector, tool_tax_calculator, execute_validation
 from src.engine.validator import (
     validate_dag_structure,
     validate_semantic_integrity,
@@ -283,6 +283,59 @@ class TestWorkflowExecution:
 
         rejected = WorkflowRunner.resume_approval(paused.id, "REJECT", "Denied by manager.")
         assert rejected.status == ExecutionStatus.REJECTED
+
+
+# ─── Validation Engine & Date Tests ──────────────────────
+
+class TestValidationEngine:
+    def test_date_validation_success(self):
+        config = {
+            "rules": [
+                {"field": "order_date", "operator": "is_date"},
+                {"field": "order_date", "operator": ">=", "value": "2026-01-01"}
+            ]
+        }
+        passed, res, msg = execute_validation(config, {"order_date": "2026-09-28"})
+        assert passed is True
+
+    def test_date_validation_failure(self):
+        config = {
+            "rules": [
+                {"field": "order_date", "operator": "is_date"}
+            ]
+        }
+        passed, res, msg = execute_validation(config, {"order_date": "not-a-valid-date"})
+        assert passed is False
+
+    def test_email_alias_resolution(self):
+        config = {
+            "rules": [
+                {"field": "email", "operator": "exists"},
+                {"field": "email", "operator": "contains", "value": "@"}
+            ]
+        }
+        # Provided as customer_email alias instead of exact email
+        passed, res, msg = execute_validation(config, {"customer_email": "john@example.com"})
+        assert passed is True
+
+    def test_missing_field_informative_error(self):
+        config = {
+            "rules": [
+                {"field": "email", "operator": "exists"}
+            ]
+        }
+        passed, res, msg = execute_validation(config, {"amount": 500})
+        assert passed is False
+        assert "Field 'email' was not found" in msg
+
+    def test_sample_input_overlay_preserves_defaults(self):
+        wf = get_template_as_workflow("wf_refund_guard")
+        # Initialize execution with ONLY amount provided, relying on default sample inputs
+        exec_obj = WorkflowRunner.initialize_execution(wf, {"amount": 400.0})
+        # customer_email from sample_input should still be present in context
+        assert "customer_email" in exec_obj.context
+        assert exec_obj.context["customer_email"] == "sarah.connor@example.com"
+        assert exec_obj.context["amount"] == 400.0
 
 
 if __name__ == "__main__":

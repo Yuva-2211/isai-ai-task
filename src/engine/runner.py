@@ -32,7 +32,10 @@ class WorkflowRunner:
         Creates a new execution record in the database with initial context.
         """
         save_workflow(workflow)
-        context = dict(initial_input or workflow.sample_input)
+        # Base context on sample_input, then overlay any user-provided initial_input
+        context = dict(workflow.sample_input or {})
+        if initial_input:
+            context.update(initial_input)
         context["nodes"] = {}
 
         execution = WorkflowExecution(

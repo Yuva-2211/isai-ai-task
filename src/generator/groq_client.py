@@ -96,6 +96,7 @@ STRICT ARCHITECTURAL & DAG INTEGRITY RULES:
 - "entrypoint" must match an existing node id.
 - Every node in "nodes" must be reachable from the "entrypoint" through edges (no disconnected or orphaned nodes).
 - All edges must reference valid existing node IDs in "from_node" and "to_node". Ensure exact string matching of node IDs.
+- "sample_input" MUST contain realistic sample values for all fields checked by "validation" nodes (e.g. "email": "customer@example.com", "date": "2026-09-28", "amount": 100).
 - Keep descriptions and labels concise (under 15 words) to ensure the JSON remains token-efficient.
 - Output ONLY pure JSON. No markdown backticks, no explanations.
 

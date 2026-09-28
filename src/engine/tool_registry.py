@@ -1,57 +1,191 @@
 import hashlib
 import time
 import requests
-from typing import Dict, Any, Tuple
+import re
+from datetime import datetime, date
+from typing import Dict, Any, Tuple, Optional, List
 from src.engine.evaluator import interpolate_payload, interpolate_string
 
-# --- 1. Validation Logic ---
+# --- 1. Validation Helpers & Logic ---
+
+COMMON_FIELD_ALIASES = {
+    "email": ["customer_email", "user_email", "contact_email", "client_email", "sender_email", "mail"],
+    "date": ["order_date", "created_at", "timestamp", "transaction_date", "request_date", "due_date", "invoice_date", "event_date"],
+    "amount": ["order_amount", "total", "price", "subtotal", "order_value", "final_order_value", "balance"],
+    "id": ["order_id", "user_id", "customer_id", "transaction_id", "item_id"],
+    "name": ["customer_name", "user_name", "full_name", "client_name"]
+}
+
+def parse_date_safe(val: Any) -> Optional[datetime]:
+    """Attempts to parse a value into a datetime object across common date/time formats."""
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, date):
+        return datetime.combine(val, datetime.min.time())
+    if not isinstance(val, str) or not val.strip():
+        return None
+    val_clean = val.strip().replace("Z", "+00:00")
+    for fmt in [
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y/%m/%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+        "%Y-%m-%d %H:%M:%S"
+    ]:
+        try:
+            return datetime.strptime(val_clean, fmt)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(val_clean)
+    except Exception:
+        pass
+    return None
+
+def resolve_context_value(context: Dict[str, Any], field: str) -> Any:
+    """
+    Intelligently retrieves a value from the workflow execution context.
+    Supports direct keys, case-insensitivity, dot-notation, common synonyms,
+    and upstream node outputs.
+    """
+    if not field or not isinstance(context, dict):
+        return None
+        
+    # 1. Exact match
+    if field in context:
+        return context[field]
+
+    field_lower = field.lower()
+
+    # 2. Case-insensitive top-level match
+    for k, v in context.items():
+        if k.lower() == field_lower:
+            return v
+
+    # 3. Dot notation (e.g. "customer.email" or "nodes.step1.output.id")
+    if "." in field:
+        parts = field.split(".")
+        curr = context
+        found = True
+        for part in parts:
+            if isinstance(curr, dict) and part in curr:
+                curr = curr[part]
+            else:
+                found = False
+                break
+        if found:
+            return curr
+
+    # 4. Alias lookup
+    for canonical, aliases in COMMON_FIELD_ALIASES.items():
+        if field_lower == canonical or field_lower in aliases:
+            if canonical in context and context[canonical] is not None:
+                return context[canonical]
+            for alias in aliases:
+                if alias in context and context[alias] is not None:
+                    return context[alias]
+                for k, v in context.items():
+                    if k.lower() == alias and v is not None:
+                        return v
+
+    # 5. Look inside context["nodes"] outputs
+    if "nodes" in context and isinstance(context["nodes"], dict):
+        for node_data in context["nodes"].values():
+            if isinstance(node_data, dict) and "output" in node_data and isinstance(node_data["output"], dict):
+                output_dict = node_data["output"]
+                if field in output_dict:
+                    return output_dict[field]
+                for k, v in output_dict.items():
+                    if k.lower() == field_lower:
+                        return v
+
+    # 6. Deep recursive search for key in any nested dictionary in context
+    def search_dict(d: dict) -> Any:
+        for k, v in d.items():
+            if k == "nodes":
+                continue
+            if k.lower() == field_lower and v is not None:
+                return v
+            if isinstance(v, dict):
+                res = search_dict(v)
+                if res is not None:
+                    return res
+        return None
+
+    return search_dict(context)
 
 def execute_validation(config: Dict[str, Any], context: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], str]:
     """
-    Validates rules specified in node config.
-    Example config:
-    {
-      "rules": [
-        {"field": "amount", "operator": ">", "value": 0},
-        {"field": "customer_email", "operator": "contains", "value": "@"}
-      ]
-    }
+    Validates rules specified in node config with full support for:
+    - Existence & non-empty checks ('exists', 'required', 'is_not_empty')
+    - Date format and chronological comparisons ('is_date', 'valid_date', '>', '<')
+    - Numerical threshold comparisons ('>', '>=', '<', '<=')
+    - String operations ('contains', '==', '!=', 'matches', 'is_email')
     """
     rules = config.get("rules", [])
     validation_results = {}
     
     for rule in rules:
         field = rule.get("field")
-        op = rule.get("operator")
+        op = str(rule.get("operator", "exists")).lower().strip()
         expected = rule.get("value")
         
-        # Get actual value from context
-        actual = context.get(field)
-        if actual is None and "nodes" in context:
-            # Check nested nodes output if not in top level
-            for node_data in context["nodes"].values():
-                if isinstance(node_data, dict) and "output" in node_data and isinstance(node_data["output"], dict):
-                    if field in node_data["output"]:
-                        actual = node_data["output"][field]
-                        break
+        # Get actual value from context via smart resolution
+        actual = resolve_context_value(context, field)
 
         passed = False
-        if op == ">":
-            passed = actual is not None and float(actual) > float(expected)
-        elif op == ">=":
-            passed = actual is not None and float(actual) >= float(expected)
-        elif op == "<":
-            passed = actual is not None and float(actual) < float(expected)
-        elif op == "<=":
-            passed = actual is not None and float(actual) <= float(expected)
-        elif op == "==":
-            passed = str(actual).lower() == str(expected).lower()
-        elif op == "!=":
-            passed = str(actual).lower() != str(expected).lower()
+        
+        # 1. Existence / Presence checks
+        if op in ["exists", "required", "is_not_empty", "present", "not_null"]:
+            passed = actual is not None and str(actual).strip() != "" and actual != [] and actual != {}
+
+        # 2. Date validity checks
+        elif op in ["is_date", "valid_date", "is_valid_date", "date_format", "date"]:
+            passed = actual is not None and parse_date_safe(str(actual)) is not None
+
+        # 3. Email format check
+        elif op in ["is_email", "email"]:
+            passed = actual is not None and "@" in str(actual) and "." in str(actual)
+
+        # 4. String contains check
         elif op == "contains":
             passed = actual is not None and str(expected).lower() in str(actual).lower()
-        elif op == "exists":
-            passed = actual is not None and actual != ""
+
+        # 5. Equality checks
+        elif op in ["==", "equals", "eq"]:
+            passed = str(actual).strip().lower() == str(expected).strip().lower()
+        elif op in ["!=", "not_equals", "neq"]:
+            passed = str(actual).strip().lower() != str(expected).strip().lower()
+
+        # 6. Relational comparisons (supports both numbers and dates)
+        elif op in [">", ">=", "<", "<="]:
+            actual_date = parse_date_safe(str(actual)) if actual is not None else None
+            expected_date = parse_date_safe(str(expected)) if expected is not None else None
+            
+            if actual_date and expected_date:
+                if op == ">": passed = actual_date > expected_date
+                elif op == ">=": passed = actual_date >= expected_date
+                elif op == "<": passed = actual_date < expected_date
+                elif op == "<=": passed = actual_date <= expected_date
+            else:
+                try:
+                    act_num = float(actual)
+                    exp_num = float(expected)
+                    if op == ">": passed = act_num > exp_num
+                    elif op == ">=": passed = act_num >= exp_num
+                    elif op == "<": passed = act_num < exp_num
+                    elif op == "<=": passed = act_num <= exp_num
+                except (ValueError, TypeError):
+                    passed = False
+
+        # 7. Regex / Pattern matches
+        elif op in ["matches", "regex"]:
+            passed = actual is not None and bool(re.search(str(expected), str(actual)))
+
+        # Default fallback
         else:
             passed = actual is not None
 
@@ -59,6 +193,12 @@ def execute_validation(config: Dict[str, Any], context: Dict[str, Any]) -> Tuple
         validation_results[rule_name] = {"passed": passed, "actual": actual}
         
         if not passed:
+            if actual is None:
+                avail_keys = [k for k in context.keys() if k != "nodes"]
+                return False, validation_results, (
+                    f"Validation rule failed: Field '{field}' was not found in trigger payload (rule: '{rule_name}'). "
+                    f"Available payload fields: {avail_keys}."
+                )
             return False, validation_results, f"Validation rule failed: '{rule_name}' (Got '{actual}')"
 
     return True, {"all_passed": True, "details": validation_results}, "Validation passed successfully."
