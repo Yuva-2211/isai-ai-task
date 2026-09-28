@@ -142,8 +142,8 @@ with st.sidebar:
         os.environ["GROQ_API_KEY"] = user_api_key
 
     groq_model = st.selectbox(
-        "Groq Model",
-        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        "LLM Model",
+        ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
         index=0
     )
     os.environ["GROQ_MODEL"] = groq_model

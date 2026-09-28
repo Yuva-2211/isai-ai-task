@@ -65,7 +65,7 @@ def generate_workflow_from_prompt(
     back to the LLM until the DAG is structurally sound.
     """
     effective_key = api_key or os.getenv("GROQ_API_KEY")
-    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
     # If Groq is available, generate via LLM with feedback loop
     if effective_key and effective_key.strip() and effective_key != "your_groq_api_key_here":
