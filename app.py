@@ -3,6 +3,9 @@ import json
 import os
 import httpx
 from typing import Dict, Any, Optional, List
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 from src.models.schema import (
     WorkflowDefinition,
@@ -216,13 +219,6 @@ with tab_gen:
     with col_input:
         st.subheader("Natural Language Objective")
         
-        groq_api_key = st.text_input(
-            "Groq API Key (Optional if configured in .env):",
-            type="password",
-            value="",
-            help="Enter your Groq API key (starts with gsk_...) to compile new natural language prompts using LLM."
-        )
-
         prompt_input = st.text_area(
             "Describe the business process to automate:",
             value=st.session_state.prompt_text,
@@ -232,8 +228,7 @@ with tab_gen:
         if st.button("Compile into Workflow", type="primary", use_container_width=True):
             with st.spinner("AI compiling workflow with Pydantic & DAG self-correction loop..."):
                 try:
-                    passed_key = groq_api_key.strip() if groq_api_key and groq_api_key.strip() else None
-                    wf = api_generate_workflow(prompt_input, api_key=passed_key)
+                    wf = api_generate_workflow(prompt_input)
                     st.session_state.current_workflow = wf
                     st.session_state.current_execution = None
                     st.session_state.prompt_text = prompt_input

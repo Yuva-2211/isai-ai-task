@@ -3,6 +3,9 @@ import json
 import logging
 from typing import Dict, Any, Optional, Tuple, List
 from pydantic import ValidationError
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 from src.models.schema import (
     WorkflowDefinition,
