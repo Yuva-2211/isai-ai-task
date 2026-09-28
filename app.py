@@ -2,10 +2,12 @@ import streamlit as st
 import json
 import os
 import time
-from typing import Dict, Any
+import httpx
+from typing import Dict, Any, Optional
 
 from src.models.schema import (
     WorkflowDefinition,
+    WorkflowExecution,
     ExecutionStatus,
     NodeType
 )
@@ -19,18 +21,21 @@ from src.generator.groq_client import generate_workflow_from_prompt
 from src.generator.templates import get_predefined_templates, get_template_as_workflow
 from src.engine.runner import WorkflowRunner
 
-# Page Configuration
+# Backend Configuration
+BACKEND_BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+# Page Configuration - No Sidebar
 st.set_page_config(
     page_title="GenAI Natural Language Workflow Generator",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Custom Styling
 st.markdown("""
 <style>
-    .reportview-container {
-        background: #0e1117;
+    [data-testid="stSidebar"] {
+        display: none;
     }
     .main-header {
         font-size: 2.2rem;
@@ -43,7 +48,26 @@ st.markdown("""
     .sub-header {
         font-size: 1.05rem;
         color: #94A3B8;
-        margin-bottom: 1.5rem;
+        margin-bottom: 1.2rem;
+    }
+    .status-bar {
+        background-color: #1E293B;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 0.5rem 1rem;
+        margin-bottom: 1.2rem;
+        font-size: 0.88rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+    .status-online {
+        color: #10B981;
+        font-weight: 600;
+    }
+    .status-offline {
+        color: #F59E0B;
+        font-weight: 600;
     }
     .approval-card {
         background-color: rgba(245, 158, 11, 0.1);
@@ -60,14 +84,76 @@ st.markdown("""
         padding: 1rem;
         margin-bottom: 1rem;
     }
-    .badge {
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 0.8rem;
-        font-weight: 600;
+    .rejected-card {
+        background-color: rgba(239, 68, 68, 0.1);
+        border: 1px solid #EF4444;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
+
+# --- Backend HTTP Client Helpers ---
+
+def check_backend_health() -> bool:
+    try:
+        resp = httpx.get(f"{BACKEND_BASE_URL}/api/health", timeout=1.5)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+def api_generate_workflow(prompt: str) -> WorkflowDefinition:
+    """Calls FastAPI POST /api/workflows/generate with fallback to in-process compiler."""
+    try:
+        resp = httpx.post(
+            f"{BACKEND_BASE_URL}/api/workflows/generate",
+            json={"prompt": prompt},
+            timeout=30.0
+        )
+        if resp.status_code == 200:
+            return WorkflowDefinition.model_validate(resp.json())
+    except Exception as e:
+        print(f"[HTTP] Backend API generate failed: {e}. Using in-process compiler.")
+    
+    # In-process execution fallback
+    wf = generate_workflow_from_prompt(prompt)
+    save_workflow(wf)
+    return wf
+
+def api_execute_workflow(workflow_id: str, input_payload: Dict[str, Any]) -> WorkflowExecution:
+    """Calls FastAPI POST /api/workflows/{id}/execute with fallback to in-process runner."""
+    try:
+        resp = httpx.post(
+            f"{BACKEND_BASE_URL}/api/workflows/{workflow_id}/execute",
+            json=input_payload,
+            timeout=15.0
+        )
+        if resp.status_code == 200:
+            return WorkflowExecution.model_validate(resp.json())
+    except Exception as e:
+        print(f"[HTTP] Backend API execute failed: {e}. Using in-process runner.")
+
+    # In-process execution fallback
+    wf = get_workflow(workflow_id)
+    exec_obj = WorkflowRunner.initialize_execution(wf, input_payload)
+    return WorkflowRunner.run_step_by_step(exec_obj.id)
+
+def api_submit_decision(execution_id: str, decision: str, comment: str) -> WorkflowExecution:
+    """Calls FastAPI POST /api/executions/{id}/decision with fallback to in-process runner."""
+    try:
+        resp = httpx.post(
+            f"{BACKEND_BASE_URL}/api/executions/{execution_id}/decision",
+            json={"decision": decision, "comment": comment},
+            timeout=15.0
+        )
+        if resp.status_code == 200:
+            return WorkflowExecution.model_validate(resp.json())
+    except Exception as e:
+        print(f"[HTTP] Backend API decision failed: {e}. Using in-process runner.")
+
+    # In-process execution fallback
+    return WorkflowRunner.resume_approval(execution_id, decision, comment)
 
 # Helper: Render Graphviz Chart
 def render_workflow_graph(workflow: WorkflowDefinition, current_node_id: str = None, execution_logs: list = None):
@@ -84,7 +170,6 @@ def render_workflow_graph(workflow: WorkflowDefinition, current_node_id: str = N
         '  edge [fontname="Inter, Arial", fontsize=10, color="#64748B"];'
     ]
 
-    # Node styling dictionary based on type
     type_styles = {
         NodeType.VALIDATION: 'fillcolor="#E0F2FE", fontcolor="#0369A1", color="#0284C7"',
         NodeType.TOOL: 'fillcolor="#DCFCE7", fontcolor="#15803D", color="#16A34A"',
@@ -95,14 +180,11 @@ def render_workflow_graph(workflow: WorkflowDefinition, current_node_id: str = N
         NodeType.NOTIFICATION: 'fillcolor="#CCFBF1", fontcolor="#0F766E", color="#0D9488"'
     }
 
-    # Add Nodes
     for node in workflow.nodes:
         style = type_styles.get(node.type, 'fillcolor="#F8FAFC", fontcolor="#1E293B", color="#94A3B8"')
-        
-        # Highlight active node or status
         status_suffix = ""
         if node.id == current_node_id:
-            style += ', penwidth=3, color="#EC4899"'  # Highlight for active
+            style += ', penwidth=3, color="#EC4899"'
             status_suffix = "\\n(CURRENT)"
         elif node.id in node_status_map:
             st_val = node_status_map[node.id]
@@ -116,7 +198,6 @@ def render_workflow_graph(workflow: WorkflowDefinition, current_node_id: str = N
         label_escaped = node.label.replace('"', '\\"') + status_suffix
         dot_lines.append(f'  "{node.id}" [label="{label_escaped}", {style}];')
 
-    # Add Edges
     for edge in workflow.edges:
         edge_label = ""
         if edge.condition_branch == "true":
@@ -135,40 +216,81 @@ if "current_workflow" not in st.session_state:
 if "current_execution" not in st.session_state:
     st.session_state.current_execution = None
 
-# --- Sidebar ---
-with st.sidebar:
-    st.title("Workflow Studio")
-    st.markdown("Convert plain English into enterprise-grade executable DAGs.")
-
-    st.subheader("LLM Configuration")
-    user_api_key = st.text_input("Groq API Key (Optional)", type="password", help="Leave blank to use environment key or smart demo templates.")
-    if user_api_key:
-        os.environ["GROQ_API_KEY"] = user_api_key
-
-    groq_model = st.selectbox(
-        "LLM Model",
-        ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-        index=0
+if "prompt_text" not in st.session_state:
+    st.session_state.prompt_text = (
+        "When a refund request arrives, validate that amount is positive and email is valid. "
+        "Run the fraud detector tool. If amount > $500 or risk score > 0.65, request manager approval. "
+        "Once approved, call the Stripe refund API. If Stripe fails, alert support on Slack. "
+        "Finally send a confirmation email to customer."
     )
-    os.environ["GROQ_MODEL"] = groq_model
-
-    st.divider()
-    st.subheader("Example Blueprints")
-    templates = get_predefined_templates()
-    template_names = [t["name"] for t in templates]
-    selected_name = st.selectbox("Select Blueprint:", template_names, index=0)
-    picked_template = next(t for t in templates if t["name"] == selected_name)
-
-    if st.button("Load Blueprint", use_container_width=True):
-        st.session_state.current_workflow = get_template_as_workflow(picked_template["id"])
-        st.session_state.current_execution = None
-        st.rerun()
 
 # --- Header ---
 st.markdown('<div class="main-header">Natural Language Workflow Generator</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Compile business objectives into deterministic, executable DAGs with APIs, validation, conditional branching, and human approval gates.</div>', unsafe_allow_html=True)
 
-# --- Main Tabs ---
+# Live Backend Health Status Bar
+backend_online = check_backend_health()
+status_class = "status-online" if backend_online else "status-offline"
+status_text = f"Connected ({BACKEND_BASE_URL})" if backend_online else f"Direct Engine Mode ({BACKEND_BASE_URL} offline)"
+st.markdown(f"""
+<div class="status-bar">
+    <span><b>Backend Engine:</b> <span class="{status_class}">{status_text}</span></span>
+    <span style="color: #64748B;">|</span>
+    <span><b>Execution Mode:</b> REST API / In-Process Fallback</span>
+</div>
+""", unsafe_allow_html=True)
+
+# Quick Preset Buttons
+st.markdown("**Quick Preset Scenarios:**")
+pcol1, pcol2, pcol3, pcol4 = st.columns(4)
+
+with pcol1:
+    if st.button("Refund & Fraud Guard", use_container_width=True):
+        st.session_state.prompt_text = (
+            "When a refund request arrives, validate that amount is positive and email is valid. "
+            "Run the fraud detector tool. If amount > $500 or risk score > 0.65, request manager approval. "
+            "Once approved, call the Stripe refund API and notify the customer via email."
+        )
+        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
+        st.session_state.current_execution = None
+        st.rerun()
+
+with pcol2:
+    if st.button("Loan Underwriting", use_container_width=True):
+        st.session_state.prompt_text = (
+            "When customer loan application arrives, validate amount > 1000 and email format. "
+            "Run fraud risk assessment. If amount >= 5000 or risk score > 0.65, require credit officer human approval. "
+            "Once approved, disburse funds via Core Banking ACH API and notify the applicant."
+        )
+        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
+        st.session_state.current_execution = None
+        st.rerun()
+
+with pcol3:
+    if st.button("Customer Support Triage", use_container_width=True):
+        st.session_state.prompt_text = (
+            "When a customer support ticket arrives, validate ticket ID and email. "
+            "Analyze customer sentiment. If priority is HIGH or sentiment is NEGATIVE, escalate to support lead for approval. "
+            "Once approved, create a Jira priority incident and alert support channel on Slack."
+        )
+        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
+        st.session_state.current_execution = None
+        st.rerun()
+
+with pcol4:
+    if st.button("Employee IT Access", use_container_width=True):
+        st.session_state.prompt_text = (
+            "When a new employee onboarding request arrives, validate corporate email and role. "
+            "If role is DevOps or Admin, require IT Security Manager approval. "
+            "Once approved, provision AWS and Okta access, and post a welcome message to Slack."
+        )
+        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
+        st.session_state.current_execution = None
+        st.rerun()
+
+st.markdown("---")
+
+# Main Tabs
 tab_gen, tab_run = st.tabs(["1. Generator & Flow Graph", "2. Live Execution & Approval Gate"])
 
 # TAB 1: GENERATOR & FLOW GRAPH
@@ -178,32 +300,23 @@ with tab_gen:
     with col_input:
         st.subheader("Natural Language Objective")
         
-        default_prompt = (
-            "When a refund request arrives, validate that amount is positive and email is valid. "
-            "Run the fraud detector tool. If amount > $500 or risk score > 0.65, request manager approval. "
-            "Once approved, call the Stripe refund API. If Stripe fails, alert support on Slack. "
-            "Finally send a confirmation email to customer."
-        )
-
         prompt_input = st.text_area(
-            "Describe the business process to automate:",
-            value=default_prompt,
+            "Describe any operational workflow to compile:",
+            value=st.session_state.prompt_text,
             height=140
         )
 
-        generate_col, reset_col = st.columns([1, 1])
-        with generate_col:
-            if st.button("Compile into Workflow", type="primary", use_container_width=True):
-                with st.spinner("AI analyzing intent and constructing DAG..."):
-                    try:
-                        wf = generate_workflow_from_prompt(prompt_input, user_api_key)
-                        save_workflow(wf)
-                        st.session_state.current_workflow = wf
-                        st.session_state.current_execution = None
-                        st.success(f"Generated workflow: {wf.name} ({len(wf.nodes)} steps)")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Compilation error: {e}")
+        if st.button("Compile into Workflow", type="primary", use_container_width=True):
+            with st.spinner("Analyzing intent and compiling executable DAG..."):
+                try:
+                    wf = api_generate_workflow(prompt_input)
+                    st.session_state.current_workflow = wf
+                    st.session_state.current_execution = None
+                    st.session_state.prompt_text = prompt_input
+                    st.success(f"Successfully compiled: {wf.name} ({len(wf.nodes)} steps)")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Compilation error: {e}")
 
         st.markdown("---")
         st.markdown(f"**Loaded Workflow**: `{st.session_state.current_workflow.name}`")
@@ -235,14 +348,12 @@ with tab_run:
             try:
                 parsed_input = json.loads(user_input_json)
                 wf = st.session_state.current_workflow
-                save_workflow(wf)  # Ensure saved in DB
+                save_workflow(wf)
                 
-                # Initialize execution
-                exec_obj = WorkflowRunner.initialize_execution(wf, parsed_input)
-                # Run until complete or waiting for approval
-                updated_exec = WorkflowRunner.run_step_by_step(exec_obj.id)
-                st.session_state.current_execution = updated_exec
-                st.rerun()
+                with st.spinner("Dispatching execution to workflow engine..."):
+                    updated_exec = api_execute_workflow(wf.id, parsed_input)
+                    st.session_state.current_execution = updated_exec
+                    st.rerun()
             except Exception as e:
                 st.error(f"Execution failed to start: {e}")
 
@@ -253,7 +364,6 @@ with tab_run:
         if not curr_exec:
             st.info("No active execution. Click 'Start Workflow Execution' to run.")
         else:
-            # Status Badge
             status_colors = {
                 ExecutionStatus.RUNNING: "orange",
                 ExecutionStatus.WAITING_APPROVAL: "gold",
@@ -280,13 +390,13 @@ with tab_run:
                 with btn_col1:
                     if st.button("Approve & Continue", type="primary", use_container_width=True):
                         with st.spinner("Processing approval and resuming downstream steps..."):
-                            resumed = WorkflowRunner.resume_approval(curr_exec.id, "APPROVE", appr_comment)
+                            resumed = api_submit_decision(curr_exec.id, "APPROVE", appr_comment)
                             st.session_state.current_execution = resumed
                             st.rerun()
                 with btn_col2:
                     if st.button("Reject Workflow", use_container_width=True):
                         with st.spinner("Rejecting workflow..."):
-                            resumed = WorkflowRunner.resume_approval(curr_exec.id, "REJECT", appr_comment)
+                            resumed = api_submit_decision(curr_exec.id, "REJECT", appr_comment)
                             st.session_state.current_execution = resumed
                             st.rerun()
 
@@ -295,6 +405,14 @@ with tab_run:
                 <div class="success-card">
                     <h4 style="color: #059669; margin: 0;">Workflow Successfully Completed</h4>
                     <p style="margin: 0.5rem 0 0 0; color: #065F46;">All operations, data transformations, and external API calls finished.</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            elif curr_exec.status == ExecutionStatus.REJECTED:
+                st.markdown("""
+                <div class="rejected-card">
+                    <h4 style="color: #EF4444; margin: 0;">Workflow Terminated (Rejected)</h4>
+                    <p style="margin: 0.5rem 0 0 0; color: #991B1B;">The human reviewer rejected this execution. Downstream actions have been blocked.</p>
                 </div>
                 """, unsafe_allow_html=True)
 
