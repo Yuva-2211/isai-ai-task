@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Dict, Any, List, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uuid
 import datetime
 
@@ -26,6 +26,14 @@ class NodeErrorPolicy(BaseModel):
     fallback_node: Optional[str] = Field(default=None, description="Node ID to branch to on final error")
     fail_workflow: bool = Field(default=True, description="Fail entire workflow if error occurs and no fallback")
 
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_error_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if 'fallback_node' not in data and 'fallback_node_id' in data:
+                data['fallback_node'] = data['fallback_node_id']
+        return data
+
 class WorkflowNode(BaseModel):
     id: str
     type: NodeType
@@ -42,6 +50,29 @@ class WorkflowEdge(BaseModel):
         description="Branch evaluation trigger: 'true', 'false', or None for standard unconditional transition"
     )
 
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_edge_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if 'from_node' not in data:
+                for k in ['from', 'source', 'fromNode', 'src']:
+                    if k in data:
+                        data['from_node'] = data[k]
+                        break
+            if 'to_node' not in data:
+                for k in ['to', 'target', 'toNode', 'dest']:
+                    if k in data:
+                        data['to_node'] = data[k]
+                        break
+            if 'condition_branch' not in data:
+                for k in ['condition_value', 'condition', 'branch', 'case']:
+                    if k in data and data[k] is not None:
+                        data['condition_branch'] = str(data[k]).lower()
+                        break
+            elif data.get('condition_branch') is not None:
+                data['condition_branch'] = str(data['condition_branch']).lower()
+        return data
+
 class WorkflowDefinition(BaseModel):
     id: str = Field(default_factory=lambda: f"wf_{uuid.uuid4().hex[:8]}")
     name: str
@@ -50,6 +81,17 @@ class WorkflowDefinition(BaseModel):
     sample_input: Dict[str, Any] = Field(default_factory=dict)
     nodes: List[WorkflowNode]
     edges: List[WorkflowEdge]
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_definition_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if 'entrypoint' not in data:
+                for k in ['entry_node_id', 'entry_node', 'entryPoint', 'start_node']:
+                    if k in data:
+                        data['entrypoint'] = data[k]
+                        break
+        return data
 
 class StepLog(BaseModel):
     node_id: str

@@ -89,11 +89,14 @@ NODE TYPES SPECIFICATION:
 
 STRICT ARCHITECTURAL & DAG INTEGRITY RULES:
 - The graph MUST be a valid Directed Acyclic Graph (NO circular loops or cycles).
-- Every "condition" node MUST have at least two outgoing edges: exactly one with "condition_branch": "true", and one with "condition_branch": "false".
+- Every "condition" node MUST have AT LEAST TWO outgoing edges:
+  1) one edge with "condition_branch": "true" pointing to the true-action node
+  2) one edge with "condition_branch": "false" pointing to the false-action node (or continuation node)
+  DO NOT omit either branch! Both "true" and "false" outgoing edges are strictly mandatory.
 - "entrypoint" must match an existing node id.
-- Every node must be reachable from the "entrypoint" (no disconnected or orphaned nodes).
-- All edges must reference valid existing node IDs in "from_node" and "to_node".
-- All "{{variable}}" interpolations in configs must reference keys declared in "sample_input" or upstream node outputs ("nodes.<node_id>.output.<field>").
+- Every node in "nodes" must be reachable from the "entrypoint" through edges (no disconnected or orphaned nodes).
+- All edges must reference valid existing node IDs in "from_node" and "to_node". Ensure exact string matching of node IDs.
+- Keep descriptions and labels concise (under 15 words) to ensure the JSON remains token-efficient.
 - Output ONLY pure JSON. No markdown backticks, no explanations.
 
 MANDATORY SEMANTIC FIDELITY RULES:
@@ -145,11 +148,23 @@ def compile_workflow_with_groq(
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=3000
+                max_tokens=6000
             )
             raw_json = completion.choices[0].message.content
         except Exception as api_err:
-            raise RuntimeError(f"Groq API connection error: {api_err}")
+            err_str = str(api_err)
+            if "json_validate_failed" in err_str or "Failed to generate JSON" in err_str:
+                logger.warning(f"Attempt {attempt} hit Groq JSON validation error: {err_str[:200]}")
+                if attempt < max_repair_attempts:
+                    messages.append({
+                        "role": "user",
+                        "content": "Your previous output exceeded the token limit or failed JSON formatting. Please generate a concise, valid JSON specification of the workflow with all required nodes and edges."
+                    })
+                    continue
+            if attempt >= max_repair_attempts:
+                raise RuntimeError(f"Groq API connection error: {api_err}")
+            logger.warning(f"Attempt {attempt} API error: {err_str}. Retrying...")
+            continue
 
         # --- Stage 1: JSON Syntax Validation ---
         try:
