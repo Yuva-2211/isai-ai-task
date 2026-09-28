@@ -129,3 +129,108 @@ def validate_dag_structure(wf: WorkflowDefinition) -> Tuple[bool, List[str]]:
 
     is_valid = len(errors) == 0
     return is_valid, errors
+
+
+def validate_semantic_integrity(wf: WorkflowDefinition) -> Tuple[bool, List[str]]:
+    """
+    Validates semantic correctness and execution-readiness of the workflow:
+    1. Node configurations have required fields per NodeType
+    2. Tool names are specified
+    3. API endpoints and HTTP methods are valid
+    4. Condition expressions are non-empty
+    5. Human approval prompts are non-empty
+    6. Validation rules specify field and operator
+    7. Variable references ({{var}}) map to existing nodes or sample inputs
+    """
+    import re
+    errors: List[str] = []
+    node_ids = {n.id for n in wf.nodes}
+
+    for node in wf.nodes:
+        cfg = node.config or {}
+
+        # 1. Validation node checks
+        if node.type == NodeType.VALIDATION:
+            rules = cfg.get("rules")
+            if not rules or not isinstance(rules, list):
+                errors.append(f"Validation node '{node.id}' must define a non-empty 'rules' list in config.")
+            else:
+                for r in rules:
+                    if not isinstance(r, dict) or "field" not in r or "operator" not in r:
+                        errors.append(f"Validation node '{node.id}' has invalid rule definition: {r}. Must have 'field' and 'operator'.")
+
+        # 2. Tool node checks
+        elif node.type == NodeType.TOOL:
+            tool_name = cfg.get("tool_name")
+            if not tool_name or not isinstance(tool_name, str):
+                errors.append(f"Tool node '{node.id}' must specify a valid string 'tool_name' in config.")
+
+        # 3. API node checks
+        elif node.type == NodeType.API:
+            method = str(cfg.get("method", "")).upper()
+            valid_methods = {"GET", "POST", "PUT", "DELETE", "PATCH"}
+            if method not in valid_methods:
+                errors.append(f"API node '{node.id}' has invalid HTTP method '{method}'. Must be one of {valid_methods}.")
+            endpoint = cfg.get("endpoint")
+            if not endpoint or not isinstance(endpoint, str):
+                errors.append(f"API node '{node.id}' must specify a non-empty string 'endpoint' in config.")
+
+        # 4. Condition node checks
+        elif node.type == NodeType.CONDITION:
+            expr = cfg.get("expression")
+            if not expr or not isinstance(expr, str) or not expr.strip():
+                errors.append(f"Condition node '{node.id}' must specify a non-empty boolean 'expression' string in config.")
+
+        # 5. Human Approval node checks
+        elif node.type == NodeType.HUMAN_APPROVAL:
+            prompt = cfg.get("prompt")
+            if not prompt or not isinstance(prompt, str) or not prompt.strip():
+                errors.append(f"Human approval node '{node.id}' must specify a non-empty 'prompt' in config.")
+
+        # 6. Notification node checks
+        elif node.type == NodeType.NOTIFICATION:
+            msg = cfg.get("message")
+            if not msg or not isinstance(msg, str):
+                errors.append(f"Notification node '{node.id}' must specify a non-empty 'message' in config.")
+
+        # 7. Check template variable interpolation references {{nodes.xyz.output...}}
+        def find_interpolations(obj):
+            found = []
+            if isinstance(obj, str):
+                matches = re.findall(r"\{\{([^}]+)\}\}", obj)
+                found.extend(matches)
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    found.extend(find_interpolations(v))
+            elif isinstance(obj, list):
+                for item in obj:
+                    found.extend(find_interpolations(item))
+            return found
+
+        vars_used = find_interpolations(cfg)
+        for var_expr in vars_used:
+            var_clean = var_expr.strip()
+            if var_clean.startswith("nodes."):
+                parts = var_clean.split(".")
+                if len(parts) >= 2:
+                    ref_node_id = parts[1]
+                    if ref_node_id not in node_ids:
+                        errors.append(f"Node '{node.id}' references non-existent node '{ref_node_id}' in template '{{{{{var_clean}}}}}'.")
+
+    return len(errors) == 0, errors
+
+
+def validate_complete_workflow(wf: WorkflowDefinition) -> Tuple[bool, List[str]]:
+    """
+    Executes both DAG structural validation and semantic integrity validation.
+    """
+    errors: List[str] = []
+    dag_valid, dag_errors = validate_dag_structure(wf)
+    if not dag_valid:
+        errors.extend([f"[DAG Structure] {e}" for e in dag_errors])
+
+    sem_valid, sem_errors = validate_semantic_integrity(wf)
+    if not sem_valid:
+        errors.extend([f"[Semantic Integrity] {e}" for e in sem_errors])
+
+    return len(errors) == 0, errors

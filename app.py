@@ -74,20 +74,30 @@ st.markdown("""
 
 # --- Backend HTTP Client Helpers ---
 
-def api_generate_workflow(prompt: str) -> WorkflowDefinition:
+def api_generate_workflow(prompt: str, api_key: Optional[str] = None) -> WorkflowDefinition:
     """Calls FastAPI POST /api/workflows/generate with automatic in-process fallback."""
+    payload = {"prompt": prompt}
+    if api_key:
+        payload["api_key"] = api_key
     try:
         resp = httpx.post(
             f"{BACKEND_BASE_URL}/api/workflows/generate",
-            json={"prompt": prompt},
-            timeout=30.0
+            json=payload,
+            timeout=45.0
         )
         if resp.status_code == 200:
             return WorkflowDefinition.model_validate(resp.json())
+        elif resp.status_code == 400:
+            error_detail = resp.json().get("detail", resp.text)
+            raise ValueError(error_detail)
+        else:
+            raise RuntimeError(f"Server error {resp.status_code}: {resp.text}")
+    except ValueError:
+        raise
     except Exception as e:
         print(f"[API] Backend HTTP generate unavailable ({e}). Using engine fallback.")
     
-    wf = generate_workflow_from_prompt(prompt)
+    wf = generate_workflow_from_prompt(prompt, api_key=api_key)
     save_workflow(wf)
     return wf
 
@@ -206,6 +216,13 @@ with tab_gen:
     with col_input:
         st.subheader("Natural Language Objective")
         
+        groq_api_key = st.text_input(
+            "Groq API Key (Optional if configured in .env):",
+            type="password",
+            value="",
+            help="Enter your Groq API key (starts with gsk_...) to compile new natural language prompts using LLM."
+        )
+
         prompt_input = st.text_area(
             "Describe the business process to automate:",
             value=st.session_state.prompt_text,
@@ -213,14 +230,17 @@ with tab_gen:
         )
 
         if st.button("Compile into Workflow", type="primary", use_container_width=True):
-            with st.spinner("Analyzing intent and compiling executable DAG..."):
+            with st.spinner("AI compiling workflow with Pydantic & DAG self-correction loop..."):
                 try:
-                    wf = api_generate_workflow(prompt_input)
+                    passed_key = groq_api_key.strip() if groq_api_key and groq_api_key.strip() else None
+                    wf = api_generate_workflow(prompt_input, api_key=passed_key)
                     st.session_state.current_workflow = wf
                     st.session_state.current_execution = None
                     st.session_state.prompt_text = prompt_input
                     st.success(f"Successfully compiled: {wf.name} ({len(wf.nodes)} steps)")
                     st.rerun()
+                except ValueError as ve:
+                    st.error(f"Compilation notice: {ve}")
                 except Exception as e:
                     st.error(f"Compilation error: {e}")
 

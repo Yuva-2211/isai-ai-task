@@ -10,7 +10,12 @@ from src.generator.templates import get_template_as_workflow
 from src.engine.runner import WorkflowRunner
 from src.engine.evaluator import safe_eval_expression, interpolate_string
 from src.engine.tool_registry import tool_fraud_detector, tool_tax_calculator
-from src.engine.validator import validate_dag_structure
+from src.engine.validator import (
+    validate_dag_structure,
+    validate_semantic_integrity,
+    validate_complete_workflow
+)
+from src.generator.groq_client import generate_workflow_from_prompt
 
 
 # ─── Tool Tests ──────────────────────────────────────────
@@ -115,8 +120,71 @@ class TestDAGValidator:
     def test_predefined_templates_all_valid(self):
         for t_id in ["wf_refund_guard", "wf_employee_onboarding"]:
             wf = get_template_as_workflow(t_id)
-            is_valid, errors = validate_dag_structure(wf)
+            is_valid, errors = validate_complete_workflow(wf)
             assert is_valid, f"Template {t_id} failed: {errors}"
+
+
+# ─── Semantic Validation Tests ───────────────────────────
+
+class TestSemanticValidation:
+    def test_catches_invalid_http_method(self):
+        wf = WorkflowDefinition(
+            id="wf_bad_api", name="Bad API", description="Invalid method",
+            entrypoint="step_api",
+            nodes=[
+                WorkflowNode(
+                    id="step_api",
+                    type=NodeType.API,
+                    label="Call API",
+                    config={"method": "INVALID_METHOD", "endpoint": "https://api.example.com"}
+                )
+            ],
+            edges=[]
+        )
+        is_valid, errors = validate_semantic_integrity(wf)
+        assert not is_valid
+        assert any("invalid http method" in e.lower() for e in errors)
+
+    def test_catches_missing_tool_name(self):
+        wf = WorkflowDefinition(
+            id="wf_bad_tool", name="Bad Tool", description="Missing tool_name",
+            entrypoint="step_tool",
+            nodes=[
+                WorkflowNode(
+                    id="step_tool",
+                    type=NodeType.TOOL,
+                    label="Run Tool",
+                    config={"input_mapping": {}}
+                )
+            ],
+            edges=[]
+        )
+        is_valid, errors = validate_semantic_integrity(wf)
+        assert not is_valid
+        assert any("tool_name" in e.lower() for e in errors)
+
+    def test_catches_broken_node_reference_in_template(self):
+        wf = WorkflowDefinition(
+            id="wf_bad_ref", name="Bad Ref", description="Non existent parent",
+            entrypoint="step_notify",
+            nodes=[
+                WorkflowNode(
+                    id="step_notify",
+                    type=NodeType.NOTIFICATION,
+                    label="Send Slack",
+                    config={"message": "Result: {{nodes.ghost_node.output.score}}"}
+                )
+            ],
+            edges=[]
+        )
+        is_valid, errors = validate_semantic_integrity(wf)
+        assert not is_valid
+        assert any("ghost_node" in e for e in errors)
+
+    def test_missing_groq_key_raises_informative_error(self):
+        with pytest.raises(ValueError) as excinfo:
+            generate_workflow_from_prompt("Generate any workflow", api_key="")
+        assert "groq api key required" in str(excinfo.value).lower()
 
 
 # ─── End-to-End Execution Tests ──────────────────────────

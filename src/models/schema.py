@@ -87,6 +87,8 @@ class WorkflowExecution(BaseModel):
 class NaturalLanguagePromptRequest(BaseModel):
     prompt: str
     mock_input: Optional[Dict[str, Any]] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
 
 class ApprovalActionRequest(BaseModel):
     decision: str = Field(..., description="'APPROVE' or 'REJECT'")

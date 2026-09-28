@@ -50,9 +50,11 @@ def generate_workflow(req: NaturalLanguagePromptRequest):
     Translates a natural language business objective into an executable workflow DAG using Groq LLM.
     """
     try:
-        wf = generate_workflow_from_prompt(req.prompt)
+        wf = generate_workflow_from_prompt(req.prompt, api_key=req.api_key, model=req.model)
         save_workflow(wf)
         return wf
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
