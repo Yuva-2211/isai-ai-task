@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, Optional, List
 from src.models.schema import (
@@ -42,6 +43,10 @@ def startup_populate_templates():
         if not get_workflow(t["id"]):
             wf = get_template_as_workflow(t["id"])
             save_workflow(wf)
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/docs")
 
 @app.get("/api/health")
 def health_check():
