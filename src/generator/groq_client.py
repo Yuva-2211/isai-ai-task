@@ -154,6 +154,17 @@ def compile_workflow_with_groq(
             raw_json = completion.choices[0].message.content
         except Exception as api_err:
             err_str = str(api_err)
+            # Handle Groq 429 Rate Limit (e.g. 8k TPM limit on gpt-oss-120b)
+            if "429" in err_str or "rate_limit" in err_str.lower() or "tokens per minute" in err_str.lower():
+                logger.warning(
+                    f"Attempt {attempt} hit rate limit on {model_name}. "
+                    "Auto-switching to high-throughput fallback model 'llama-3.3-70b-versatile' (100k TPM)..."
+                )
+                model_name = "llama-3.3-70b-versatile"
+                import time
+                time.sleep(2.0)
+                continue
+
             if "json_validate_failed" in err_str or "Failed to generate JSON" in err_str:
                 logger.warning(f"Attempt {attempt} hit Groq JSON validation error: {err_str[:200]}")
                 if attempt < max_repair_attempts:
@@ -162,9 +173,12 @@ def compile_workflow_with_groq(
                         "content": "Your previous output exceeded the token limit or failed JSON formatting. Please generate a concise, valid JSON specification of the workflow with all required nodes and edges."
                     })
                     continue
+
             if attempt >= max_repair_attempts:
                 raise RuntimeError(f"Groq API connection error: {api_err}")
             logger.warning(f"Attempt {attempt} API error: {err_str}. Retrying...")
+            import time
+            time.sleep(1.0)
             continue
 
         # --- Stage 1: JSON Syntax Validation ---

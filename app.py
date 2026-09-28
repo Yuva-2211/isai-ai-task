@@ -24,6 +24,18 @@ from src.engine.runner import WorkflowRunner
 # Backend Configuration
 BACKEND_BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
+def btn_width_props():
+    import inspect
+    if "width" in inspect.signature(st.button).parameters:
+        return {"width": "stretch"}
+    return {"use_container_width": True}
+
+def graph_width_props():
+    import inspect
+    if "width" in inspect.signature(st.graphviz_chart).parameters:
+        return {"width": "stretch"}
+    return {"use_container_width": True}
+
 # Page Configuration - Clean full width view
 st.set_page_config(
     page_title="GenAI Natural Language Workflow Generator",
@@ -225,7 +237,7 @@ with tab_gen:
             height=140
         )
 
-        if st.button("Compile into Workflow", type="primary", use_container_width=True):
+        if st.button("Compile into Workflow", type="primary", **btn_width_props()):
             with st.spinner("AI compiling workflow with Pydantic & DAG self-correction loop..."):
                 try:
                     wf = api_generate_workflow(prompt_input)
@@ -254,7 +266,7 @@ with tab_gen:
             current_node_id=st.session_state.current_execution.current_node_id if st.session_state.current_execution else None,
             execution_logs=st.session_state.current_execution.logs if st.session_state.current_execution else None
         )
-        st.graphviz_chart(dot_code, use_container_width=True)
+        st.graphviz_chart(dot_code, **graph_width_props())
 
 # TAB 2: LIVE EXECUTION & APPROVAL GATE
 with tab_run:
@@ -272,7 +284,7 @@ with tab_run:
             key=f"input_payload_{st.session_state.current_workflow.id}"
         )
 
-        if st.button("Start Workflow Execution", type="primary", use_container_width=True):
+        if st.button("Start Workflow Execution", type="primary", **btn_width_props()):
             try:
                 parsed_input = json.loads(user_input_json)
                 wf = st.session_state.current_workflow
@@ -316,13 +328,13 @@ with tab_run:
                 
                 btn_col1, btn_col2 = st.columns(2)
                 with btn_col1:
-                    if st.button("Approve & Continue", type="primary", use_container_width=True):
+                    if st.button("Approve & Continue", type="primary", **btn_width_props()):
                         with st.spinner("Processing approval and resuming downstream steps..."):
                             resumed = api_submit_decision(curr_exec.id, "APPROVE", appr_comment)
                             st.session_state.current_execution = resumed
                             st.rerun()
                 with btn_col2:
-                    if st.button("Reject Workflow", use_container_width=True):
+                    if st.button("Reject Workflow", **btn_width_props()):
                         with st.spinner("Rejecting workflow..."):
                             resumed = api_submit_decision(curr_exec.id, "REJECT", appr_comment)
                             st.session_state.current_execution = resumed

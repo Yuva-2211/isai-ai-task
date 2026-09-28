@@ -266,16 +266,37 @@ def validate_semantic_fidelity(wf: WorkflowDefinition, natural_prompt: str) -> T
         except ValueError:
             pass
 
-    # Rule 8: Role preservation
-    known_roles = ["finance manager", "credit officer", "support lead", "security admin", "compliance officer", "team lead", "hr manager"]
-    for role in known_roles:
-        if role in p_lower:
-            appr_nodes = [n for n in wf.nodes if n.type == NodeType.HUMAN_APPROVAL]
-            if appr_nodes:
-                roles_found = [n.config.get("required_role", "").lower().replace("_", " ") for n in appr_nodes]
-                if not any(role in rf or rf in role for rf in roles_found):
+    # Rule 8: Role preservation (extract the exact role requested for approval)
+    appr_patterns = [
+        r"(?:approval|sign-?off|review)\s+(?:by|from)\s+([a-zA-Z\s]+?)(?:\.|\,|$|\s+otherwise|\s+then|\s+after)",
+        r"(?:require|pause for)\s+([a-zA-Z\s]+?)\s+(?:approval|sign-?off|review)",
+        r"(?:require|pause for)\s+(?:approval\s+by\s+)([a-zA-Z\s]+?)(?:\.|\,|$|\s+otherwise|\s+then|\s+after)",
+    ]
+    target_roles = []
+    for pat in appr_patterns:
+        matches = re.findall(pat, p_lower)
+        for m in matches:
+            cleaned = m.strip().replace("the ", "")
+            if cleaned and cleaned not in ["manual", "further", "additional", "it", "this"]:
+                target_roles.append(cleaned)
+
+    specific_roles = [
+        "finance manager", "finance director", "credit officer", "support lead", 
+        "security admin", "compliance officer", "department head", "credit committee", "hr manager"
+    ]
+    for sr in specific_roles:
+        if sr in p_lower and any(kw in p_lower for kw in [f"{sr} approval", f"by {sr}", f"from {sr}"]):
+            if sr not in target_roles:
+                target_roles.append(sr)
+
+    if target_roles:
+        appr_nodes = [n for n in wf.nodes if n.type == NodeType.HUMAN_APPROVAL]
+        if appr_nodes:
+            roles_found = [n.config.get("required_role", "").lower().replace("_", " ") for n in appr_nodes]
+            for target_role in set(target_roles):
+                if not any(target_role in rf or rf in target_role for rf in roles_found):
                     errors.append(
-                        f"Role fidelity error (Fidelity Rule 8): User requested role '{role}', "
+                        f"Role fidelity error (Fidelity Rule 8): User explicitly requested approval by '{target_role}', "
                         f"but approval node specified: {roles_found}."
                     )
 
