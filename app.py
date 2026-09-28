@@ -225,10 +225,12 @@ with tab_gen:
                     st.error(f"Compilation error: {e}")
 
         st.markdown("---")
-        st.markdown(f"**Loaded Workflow**: `{st.session_state.current_workflow.name}`")
+        st.markdown(f"**Workflow Name**: `{st.session_state.current_workflow.name}`")
         st.markdown(f"**Description**: {st.session_state.current_workflow.description}")
-        st.markdown(f"**Entrypoint**: `{st.session_state.current_workflow.entrypoint}`")
-        st.markdown(f"**Node Count**: `{len(st.session_state.current_workflow.nodes)}` | **Edge Count**: `{len(st.session_state.current_workflow.edges)}`")
+        st.markdown(f"**Entrypoint**: `{st.session_state.current_workflow.entrypoint}` | **Nodes**: `{len(st.session_state.current_workflow.nodes)}` | **Edges**: `{len(st.session_state.current_workflow.edges)}`")
+
+        with st.expander("Generated Workflow Specification (JSON Response)", expanded=True):
+            st.json(st.session_state.current_workflow.model_dump())
 
     with col_graph:
         st.subheader("Visual Graph (DAG)")
