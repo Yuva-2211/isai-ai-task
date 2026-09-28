@@ -1,9 +1,8 @@
 import streamlit as st
 import json
 import os
-import time
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from src.models.schema import (
     WorkflowDefinition,
@@ -13,18 +12,16 @@ from src.models.schema import (
 )
 from src.database.db import (
     save_workflow,
-    get_workflow,
-    list_workflows,
-    get_execution
+    get_workflow
 )
 from src.generator.groq_client import generate_workflow_from_prompt
-from src.generator.templates import get_predefined_templates, get_template_as_workflow
+from src.generator.templates import get_template_as_workflow
 from src.engine.runner import WorkflowRunner
 
 # Backend Configuration
 BACKEND_BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
-# Page Configuration - No Sidebar
+# Page Configuration - Clean full width view
 st.set_page_config(
     page_title="GenAI Natural Language Workflow Generator",
     layout="wide",
@@ -48,26 +45,7 @@ st.markdown("""
     .sub-header {
         font-size: 1.05rem;
         color: #94A3B8;
-        margin-bottom: 1.2rem;
-    }
-    .status-bar {
-        background-color: #1E293B;
-        border: 1px solid #334155;
-        border-radius: 6px;
-        padding: 0.5rem 1rem;
-        margin-bottom: 1.2rem;
-        font-size: 0.88rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-    }
-    .status-online {
-        color: #10B981;
-        font-weight: 600;
-    }
-    .status-offline {
-        color: #F59E0B;
-        font-weight: 600;
+        margin-bottom: 1.5rem;
     }
     .approval-card {
         background-color: rgba(245, 158, 11, 0.1);
@@ -96,15 +74,8 @@ st.markdown("""
 
 # --- Backend HTTP Client Helpers ---
 
-def check_backend_health() -> bool:
-    try:
-        resp = httpx.get(f"{BACKEND_BASE_URL}/api/health", timeout=1.5)
-        return resp.status_code == 200
-    except Exception:
-        return False
-
 def api_generate_workflow(prompt: str) -> WorkflowDefinition:
-    """Calls FastAPI POST /api/workflows/generate with fallback to in-process compiler."""
+    """Calls FastAPI POST /api/workflows/generate with automatic in-process fallback."""
     try:
         resp = httpx.post(
             f"{BACKEND_BASE_URL}/api/workflows/generate",
@@ -114,15 +85,14 @@ def api_generate_workflow(prompt: str) -> WorkflowDefinition:
         if resp.status_code == 200:
             return WorkflowDefinition.model_validate(resp.json())
     except Exception as e:
-        print(f"[HTTP] Backend API generate failed: {e}. Using in-process compiler.")
+        print(f"[API] Backend HTTP generate unavailable ({e}). Using engine fallback.")
     
-    # In-process execution fallback
     wf = generate_workflow_from_prompt(prompt)
     save_workflow(wf)
     return wf
 
 def api_execute_workflow(workflow_id: str, input_payload: Dict[str, Any]) -> WorkflowExecution:
-    """Calls FastAPI POST /api/workflows/{id}/execute with fallback to in-process runner."""
+    """Calls FastAPI POST /api/workflows/{id}/execute with automatic in-process fallback."""
     try:
         resp = httpx.post(
             f"{BACKEND_BASE_URL}/api/workflows/{workflow_id}/execute",
@@ -132,15 +102,14 @@ def api_execute_workflow(workflow_id: str, input_payload: Dict[str, Any]) -> Wor
         if resp.status_code == 200:
             return WorkflowExecution.model_validate(resp.json())
     except Exception as e:
-        print(f"[HTTP] Backend API execute failed: {e}. Using in-process runner.")
+        print(f"[API] Backend HTTP execute unavailable ({e}). Using engine fallback.")
 
-    # In-process execution fallback
     wf = get_workflow(workflow_id)
     exec_obj = WorkflowRunner.initialize_execution(wf, input_payload)
     return WorkflowRunner.run_step_by_step(exec_obj.id)
 
 def api_submit_decision(execution_id: str, decision: str, comment: str) -> WorkflowExecution:
-    """Calls FastAPI POST /api/executions/{id}/decision with fallback to in-process runner."""
+    """Calls FastAPI POST /api/executions/{id}/decision with automatic in-process fallback."""
     try:
         resp = httpx.post(
             f"{BACKEND_BASE_URL}/api/executions/{execution_id}/decision",
@@ -150,9 +119,8 @@ def api_submit_decision(execution_id: str, decision: str, comment: str) -> Workf
         if resp.status_code == 200:
             return WorkflowExecution.model_validate(resp.json())
     except Exception as e:
-        print(f"[HTTP] Backend API decision failed: {e}. Using in-process runner.")
+        print(f"[API] Backend HTTP decision unavailable ({e}). Using engine fallback.")
 
-    # In-process execution fallback
     return WorkflowRunner.resume_approval(execution_id, decision, comment)
 
 # Helper: Render Graphviz Chart
@@ -228,68 +196,6 @@ if "prompt_text" not in st.session_state:
 st.markdown('<div class="main-header">Natural Language Workflow Generator</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Compile business objectives into deterministic, executable DAGs with APIs, validation, conditional branching, and human approval gates.</div>', unsafe_allow_html=True)
 
-# Live Backend Health Status Bar
-backend_online = check_backend_health()
-status_class = "status-online" if backend_online else "status-offline"
-status_text = f"Connected ({BACKEND_BASE_URL})" if backend_online else f"Direct Engine Mode ({BACKEND_BASE_URL} offline)"
-st.markdown(f"""
-<div class="status-bar">
-    <span><b>Backend Engine:</b> <span class="{status_class}">{status_text}</span></span>
-    <span style="color: #64748B;">|</span>
-    <span><b>Execution Mode:</b> REST API / In-Process Fallback</span>
-</div>
-""", unsafe_allow_html=True)
-
-# Quick Preset Buttons
-st.markdown("**Quick Preset Scenarios:**")
-pcol1, pcol2, pcol3, pcol4 = st.columns(4)
-
-with pcol1:
-    if st.button("Refund & Fraud Guard", use_container_width=True):
-        st.session_state.prompt_text = (
-            "When a refund request arrives, validate that amount is positive and email is valid. "
-            "Run the fraud detector tool. If amount > $500 or risk score > 0.65, request manager approval. "
-            "Once approved, call the Stripe refund API and notify the customer via email."
-        )
-        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
-        st.session_state.current_execution = None
-        st.rerun()
-
-with pcol2:
-    if st.button("Loan Underwriting", use_container_width=True):
-        st.session_state.prompt_text = (
-            "When customer loan application arrives, validate amount > 1000 and email format. "
-            "Run fraud risk assessment. If amount >= 5000 or risk score > 0.65, require credit officer human approval. "
-            "Once approved, disburse funds via Core Banking ACH API and notify the applicant."
-        )
-        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
-        st.session_state.current_execution = None
-        st.rerun()
-
-with pcol3:
-    if st.button("Customer Support Triage", use_container_width=True):
-        st.session_state.prompt_text = (
-            "When a customer support ticket arrives, validate ticket ID and email. "
-            "Analyze customer sentiment. If priority is HIGH or sentiment is NEGATIVE, escalate to support lead for approval. "
-            "Once approved, create a Jira priority incident and alert support channel on Slack."
-        )
-        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
-        st.session_state.current_execution = None
-        st.rerun()
-
-with pcol4:
-    if st.button("Employee IT Access", use_container_width=True):
-        st.session_state.prompt_text = (
-            "When a new employee onboarding request arrives, validate corporate email and role. "
-            "If role is DevOps or Admin, require IT Security Manager approval. "
-            "Once approved, provision AWS and Okta access, and post a welcome message to Slack."
-        )
-        st.session_state.current_workflow = api_generate_workflow(st.session_state.prompt_text)
-        st.session_state.current_execution = None
-        st.rerun()
-
-st.markdown("---")
-
 # Main Tabs
 tab_gen, tab_run = st.tabs(["1. Generator & Flow Graph", "2. Live Execution & Approval Gate"])
 
@@ -301,7 +207,7 @@ with tab_gen:
         st.subheader("Natural Language Objective")
         
         prompt_input = st.text_area(
-            "Describe any operational workflow to compile:",
+            "Describe the business process to automate:",
             value=st.session_state.prompt_text,
             height=140
         )
@@ -339,10 +245,15 @@ with tab_run:
 
     with col_run_config:
         st.subheader("Trigger Parameters")
-        st.caption("Provide mock initial payload to feed into workflow entrypoint:")
+        st.caption(f"Inputs tailored for `{st.session_state.current_workflow.name}`:")
         
         sample_input_str = json.dumps(st.session_state.current_workflow.sample_input, indent=2)
-        user_input_json = st.text_area("Initial Input Payload (JSON)", value=sample_input_str, height=180)
+        user_input_json = st.text_area(
+            "Initial Input Payload (JSON)",
+            value=sample_input_str,
+            height=180,
+            key=f"input_payload_{st.session_state.current_workflow.id}"
+        )
 
         if st.button("Start Workflow Execution", type="primary", use_container_width=True):
             try:
@@ -362,7 +273,7 @@ with tab_run:
 
         curr_exec = st.session_state.current_execution
         if not curr_exec:
-            st.info("No active execution. Click 'Start Workflow Execution' to run.")
+            st.info("No active execution. Click 'Start Workflow Execution' to run the loaded workflow.")
         else:
             status_colors = {
                 ExecutionStatus.RUNNING: "orange",
